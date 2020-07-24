@@ -464,7 +464,7 @@ public class DriveService {
         HashMap<String, String> parents = new HashMap<>();
         String localRootName = new java.io.File(path).getName();
         int total;
-        AtomicInteger current = new AtomicInteger(1);
+        AtomicInteger current = new AtomicInteger(0);
 
         try (Stream<Path> paths = Files.walk(Paths.get(path))) {
             total = (int) paths.count();
@@ -494,6 +494,9 @@ public class DriveService {
 
                 try {
                     File file;
+                    if (listener != null) {
+                        listener.setProgress(current.incrementAndGet(), total, "Uploading " + localFile.getName());
+                    }
                     if (localFile.isDirectory()) {
                         fileMetadata.setMimeType(Constant.MIME_TYPE_FOLDER);
 
@@ -516,10 +519,6 @@ public class DriveService {
                         getInstance().files().create(fileMetadata, mediaContent)
                                 .setFields("id, parents")
                                 .execute();
-                    }
-
-                    if (listener != null) {
-                        listener.setProgress(current.getAndIncrement(), total, "Uploading " + localFile.getName());
                     }
                 } catch (IOException e) {
                     throw new UncheckedIOException(e);

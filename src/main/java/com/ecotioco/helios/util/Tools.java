@@ -113,13 +113,12 @@ public class Tools {
         return df.format(dateTime);
     }
 
-    public static String getMimeType(String fileName) {
+    public static String getMimeType(String fileName) throws IOException {
         File file = new File(fileName);
         try {
             return Magic.getMagicMatch(file, true).getMimeType();
         } catch (MagicParseException | MagicMatchNotFoundException | MagicException e) {
-            MimetypesFileTypeMap fileTypeMap = new MimetypesFileTypeMap();
-            return fileTypeMap.getContentType(fileName);
+            return Files.probeContentType(Paths.get(fileName));
         }
     }
 
