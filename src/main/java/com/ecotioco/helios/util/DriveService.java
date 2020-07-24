@@ -1,6 +1,7 @@
 package com.ecotioco.helios.util;
 
 import com.ecotioco.helios.listener.OnProgressUpdate;
+import com.ecotioco.helios.view.Configuration;
 import com.google.api.client.auth.oauth2.Credential;
 import com.google.api.client.extensions.java6.auth.oauth2.AuthorizationCodeInstalledApp;
 import com.google.api.client.extensions.jetty.auth.oauth2.LocalServerReceiver;
@@ -28,6 +29,7 @@ import com.google.common.hash.HashCode;
 import com.google.common.hash.Hashing;
 import org.checkerframework.checker.nullness.qual.NonNull;
 
+import javax.swing.*;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -62,7 +64,7 @@ public class DriveService {
      * @return An authorized Credential object.
      * @throws IOException If the credentials.json file cannot be found.
      */
-    private static Credential getCredentials(final NetHttpTransport HTTP_TRANSPORT) throws IOException {
+    private static Credential getCredentials(final NetHttpTransport HTTP_TRANSPORT, boolean forceLogin) throws IOException {
         // Load client secrets.
         InputStream in = DriveService.class.getResourceAsStream(CREDENTIALS_FILE_PATH);
         if (in == null) {
@@ -78,7 +80,7 @@ public class DriveService {
                 .build();
 
         Credential credential = flow.loadCredential("user");
-        if (credential == null) {
+        if (credential == null && forceLogin) {
             LocalServerReceiver receiver = new LocalServerReceiver.Builder().setPort(8142).build();
             return new AuthorizationCodeInstalledApp(flow, receiver).authorize("user");
         }
@@ -86,8 +88,16 @@ public class DriveService {
     }
 
     public static boolean isLoggedIn() {
-        java.io.File storedCredential = new java.io.File(Paths.get(TOKENS_DIRECTORY_PATH, STORED_CREDENTIAL).toString());
-        return storedCredential.exists();
+        try {
+            final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
+            if (getCredentials(HTTP_TRANSPORT, false) != null) {
+                return true;
+            }
+        } catch (GeneralSecurityException | IOException e) {
+            JOptionPane.showMessageDialog(null,
+                    "Error!\n" + e.getMessage(), "ERROR", JOptionPane.ERROR_MESSAGE);
+        }
+        return false;
     }
 
     public static boolean logOut() {
@@ -100,11 +110,12 @@ public class DriveService {
         if (instance == null) {
             try {
                 final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
-                instance = new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT))
+                instance = new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT, true))
                         .setApplicationName(APPLICATION_NAME)
                         .build();
             } catch (GeneralSecurityException | IOException e) {
-                e.printStackTrace();
+                JOptionPane.showMessageDialog(null,
+                        "Error!\n" + e.getMessage(), "ERROR", JOptionPane.ERROR_MESSAGE);
             }
         }
 
@@ -123,7 +134,7 @@ public class DriveService {
                 final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
 
                 return new com.google.api.services.driveactivity.v2.DriveActivity.Builder(
-                        HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT))
+                        HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT, true))
                         .setApplicationName(APPLICATION_NAME)
                         .build();
             } catch (GeneralSecurityException | IOException e) {
@@ -132,6 +143,30 @@ public class DriveService {
         }
 
         return null;
+    }
+
+    public static List<File> getAllFolders(String rootId, String orderBy) throws IOException {
+        List<File> files = new ArrayList<>();
+
+        String pageToken = null;
+        do {
+            FileList fileList = getInstance()
+                    .files()
+                    .list()
+                    .setQ(String.format("'%s' in parents and trashed = false and mimeType = '%s'", rootId, Constant.MIME_TYPE_FOLDER))
+                    .setPageSize(1000)
+                    .setPageToken(pageToken)
+                    .setFields("nextPageToken, files(id, name, createdTime)")
+                    .setOrderBy(orderBy)
+                    .execute();
+            pageToken = fileList.getNextPageToken();
+
+            if (!fileList.getFiles().isEmpty()) {
+                files.addAll(fileList.getFiles());
+            }
+        } while (pageToken != null);
+
+        return files;
     }
 
     public static FileList getAllFiles(String nextPageToken, String orderBy) throws IOException {
@@ -375,8 +410,11 @@ public class DriveService {
         }
     }
 
-    public static void downloadFolder(String path, String folderId, Map<String, List<String>> exportFormats) throws IOException {
+    public static void downloadFolder(String path, String folderId, Map<String, List<String>> exportFormats, OnProgressUpdate listener) throws IOException {
         java.io.File folder = new java.io.File(path);
+        if (listener != null) {
+            listener.setProgress(0, 1, "Downloading folder " + folder.getName());
+        }
         folder.mkdir();
         path += java.io.File.separator;
         String nextPageToken = null;
@@ -387,7 +425,7 @@ public class DriveService {
                     .files()
                     .list()
                     .setQ(query)
-                    .setFields("nextPageToken, files(id, name, mimeType)")
+                    .setFields("nextPageToken, files(id, size, name, mimeType)")
                     .setPageSize(1000)
                     .setPageToken(nextPageToken)
                     .execute();
@@ -396,8 +434,11 @@ public class DriveService {
             List<File> files = fileList.getFiles();
             for (File file : files) {
                 if (file.getMimeType().equalsIgnoreCase(Constant.MIME_TYPE_FOLDER)) {
-                    downloadFolder(path + file.getName(), file.getId(), exportFormats);
+                    downloadFolder(path + file.getName(), file.getId(), exportFormats, listener);
                 } else {
+                    if (listener != null) {
+                        listener.setProgress(0, 1, "Downloading file " + file.getName());
+                    }
                     try (OutputStream outputStream = new FileOutputStream(path + file.getName())) {
                         // If is G Suite document
                         if (exportFormats.containsKey(file.getMimeType())) {
@@ -586,7 +627,6 @@ public class DriveService {
                         .files()
                         .update(onlineFile.getId(), updateFile, fileContent)
                         .execute();
-                System.out.println("File updated - " + localFile.getName());
             }
         }
 
@@ -595,8 +635,6 @@ public class DriveService {
                     .files()
                     .delete(onlineFiles.get(filePath).getId())
                     .execute();
-
-            System.out.println("File removed - " + onlineFiles.get(filePath).getName());
         }
 
         for (String filePath : uploadFiles) {
@@ -611,7 +649,6 @@ public class DriveService {
             getInstance().files().create(fileMetadata, mediaContent)
                     .setFields("id, parents")
                     .execute();
-            System.out.println("File created - " + localFile.getName());
         }
     }
 
@@ -627,6 +664,7 @@ public class DriveService {
             List<String> removes = new ArrayList<>(Sets.difference(onlineFolderMap.keySet(), localFolderTree));
             List<String> uploads = new ArrayList<>(Sets.difference(localFolderTree, onlineFolderMap.keySet()));
             List<String> exacts = new ArrayList<>(Sets.intersection(localFolderTree, onlineFolderMap.keySet()));
+            exacts.add(0, "");
 
             removes.sort(Comparator.comparingInt(o -> Paths.get(o).getNameCount()));
             uploads.sort(Comparator.comparingInt(o -> Paths.get(o).getNameCount()));
@@ -647,7 +685,6 @@ public class DriveService {
                 }
             }
 
-            exacts.add(0, "");
             for (String path : exacts) {
                 java.io.File exactFolder = new java.io.File(syncPath + (path.isEmpty() ? "" : java.io.File.separator + path));
                 DriveService.updateFolder(exactFolder.getPath(), path.isEmpty() ? id : onlineFolderMap.get(path));
@@ -806,28 +843,5 @@ public class DriveService {
         }
 
         return treeSet;
-    }
-
-    public static void main(String... args) throws IOException, GeneralSecurityException {
-        // Build a new authorized API client service.
-        final NetHttpTransport HTTP_TRANSPORT = GoogleNetHttpTransport.newTrustedTransport();
-        Drive service = new Drive.Builder(HTTP_TRANSPORT, JSON_FACTORY, getCredentials(HTTP_TRANSPORT))
-                .setApplicationName(APPLICATION_NAME)
-                .build();
-
-        // Print the names and IDs for up to 10 files.
-        FileList result = service.files().list()
-                .setPageSize(10)
-                .setFields("nextPageToken, files(id, name)")
-                .execute();
-        List<File> files = result.getFiles();
-        if (files == null || files.isEmpty()) {
-            System.out.println("No files found.");
-        } else {
-            System.out.println("Files:");
-            for (File file : files) {
-                System.out.printf("%s (%s)\n", file.getName(), file.getId());
-            }
-        }
     }
 }

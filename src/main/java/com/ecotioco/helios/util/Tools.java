@@ -9,11 +9,13 @@ import javax.activation.MimetypesFileTypeMap;
 import javax.swing.*;
 import java.io.*;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.CharacterIterator;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
 import java.text.StringCharacterIterator;
+import java.util.Comparator;
 import java.util.Properties;
 
 public class Tools {
@@ -69,7 +71,9 @@ public class Tools {
 
     public static boolean isConfigured() {
         String syncPath = getPreference(Constant.KEY_SYNC_FOLDER_PATH);
-        if (syncPath != null) {
+        String lastSyncTime = getPreference(Constant.KEY_LAST_SYNC);
+        String rootId = getPreference(Constant.KEY_SYNC_FOLDER_ID);
+        if (syncPath != null && lastSyncTime != null && rootId != null) {
             File folder = new File(syncPath);
             if (folder.exists() && folder.isDirectory()) {
                 return true;
@@ -89,6 +93,19 @@ public class Tools {
 
     public static long countSlash(String s) {
         return s.chars().filter(c -> c == File.separator.charAt(0)).count();
+    }
+
+    public static boolean deleteFolder(String path) {
+        try {
+            Files.walk(Paths.get(path))
+                    .sorted(Comparator.reverseOrder())
+                    .map(Path::toFile)
+                    .forEach(File::delete);
+
+            return true;
+        } catch (IOException e) {
+            return false;
+        }
     }
 
     public static String getFormattedDate(long dateTime) {

@@ -1,19 +1,10 @@
 package com.ecotioco.helios.view;
 
-import com.ecotioco.helios.util.Constant;
 import com.ecotioco.helios.util.DriveService;
 import com.ecotioco.helios.util.Tools;
-import com.google.api.services.drive.model.ChangeList;
-import com.google.api.services.drive.model.Channel;
-import com.google.api.services.drive.model.File;
-import com.google.api.services.drive.model.RevisionList;
-import com.google.api.services.driveactivity.v2.model.DriveActivity;
-import com.google.api.services.driveactivity.v2.model.QueryDriveActivityRequest;
 
 import javax.swing.*;
 import java.awt.*;
-import java.io.IOException;
-import java.util.List;
 
 public class Login extends JFrame {
 
@@ -49,7 +40,7 @@ public class Login extends JFrame {
     public static void main(String[] args) {
         if (!DriveService.isLoggedIn()) {
             new Login("Sign in to Google Drive");
-        } else if (Tools.isConfigured()) {
+        } else if ( Tools.isConfigured()) {
             new Dashboard("Helios", 0);
         } else {
             new Configuration("Set up sync folder");
