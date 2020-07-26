@@ -169,17 +169,35 @@ public class DriveService {
         return files;
     }
 
-    public static FileList getAllFiles(String nextPageToken, String orderBy) throws IOException {
-        String rootId = Tools.getPreference(Constant.KEY_SYNC_FOLDER_ID);
-        return getInstance()
-                .files()
-                .list()
-                .setQ(String.format("'%s' in parents and trashed = false", rootId))
-                .setPageSize(20)
-                .setPageToken(nextPageToken)
-                .setFields("nextPageToken, files(*)")
-                .setOrderBy(orderBy)
-                .execute();
+    public static List<File> getAllFiles(String folderId, String orderBy) throws IOException {
+        String nextPageToken = null;
+
+        List<File> files = new ArrayList<>();
+
+        do {
+            FileList fileList = getInstance()
+                    .files()
+                    .list()
+                    .setQ(String.format("'%s' in parents and trashed = false", folderId))
+                    .setPageSize(20)
+                    .setPageToken(nextPageToken)
+                    .setFields("nextPageToken, files(*)")
+                    .setOrderBy(orderBy)
+                    .execute();
+
+            nextPageToken = fileList.getNextPageToken();
+            for (File file : fileList.getFiles()) {
+                files.add(file);
+                if (file.getMimeType().equalsIgnoreCase(Constant.MIME_TYPE_FOLDER)) {
+                    List<File> subFiles = getAllFiles(file.getId(), orderBy);
+                    if (!subFiles.isEmpty()) {
+                        files.addAll(subFiles);
+                    }
+                }
+            }
+        } while (nextPageToken != null);
+
+        return files;
     }
 
     public static Map<String, List<String>> getExportFormats() throws IOException {
@@ -187,25 +205,20 @@ public class DriveService {
         return about.getExportFormats();
     }
 
-    public static File checkExistName(String fileName) throws IOException {
+    public static File checkExistName(String parentId, String fileName) throws IOException {
         FileList fileList;
-        String nextPageToken = null;
-        do {
-            fileList = getInstance()
-                    .files()
-                    .list()
-                    .setQ(String.format("name = '%s' and trashed = false and mimeType = '%s'", fileName, Constant.MIME_TYPE_FOLDER))
-                    .setFields("nextPageToken, files(id, name, modifiedTime)")
-                    .setPageSize(1000)
-                    .setPageToken(nextPageToken)
-                    .execute();
-            nextPageToken = fileList.getNextPageToken();
+        fileList = getInstance()
+                .files()
+                .list()
+                .setQ(String.format("'%s' in parents and name = '%s' and trashed = false and mimeType = '%s'", parentId, fileName, Constant.MIME_TYPE_FOLDER))
+                .setFields("nextPageToken, files(id, name, modifiedTime)")
+                .setPageSize(1)
+                .execute();
 
-            List<File> files = fileList.getFiles();
-            if (files != null && !files.isEmpty()) {
-                return fileList.getFiles().get(0);
-            }
-        } while (nextPageToken != null);
+        List<File> files = fileList.getFiles();
+        if (files != null && !files.isEmpty()) {
+            return fileList.getFiles().get(0);
+        }
 
         return null;
     }
@@ -379,14 +392,22 @@ public class DriveService {
             File file = modifiedFiles.get(key);
             java.io.File localFile = new java.io.File(syncPath + java.io.File.separator + key);
             if (file.getTrashed()) {
-                localFile.delete();
+                if (localFile.exists()) {
+                 Tools.deleteFolder(localFile.getPath());
+                }
                 if (listener != null) {
                     listener.setProgress(count, modifiedFiles.size(), "Deleting " + localFile.getName());
                 }
             } else {
                 if (file.getMimeType().equalsIgnoreCase(Constant.MIME_TYPE_FOLDER)) {
-                    localFile.mkdir();
+                    if (localFile.mkdirs()) {
+                        downloadFolder(localFile.getPath(), file.getId(), exportFormats, null);
+                    }
                 } else {
+                    if (!localFile.exists()) {
+                        localFile.getParentFile().mkdirs();
+                        localFile.createNewFile();
+                    }
                     try (OutputStream outputStream = new FileOutputStream(localFile)) {
                         // If is G Suite document
                         if (exportFormats.containsKey(file.getMimeType())) {
@@ -654,6 +675,7 @@ public class DriveService {
     public static boolean syncToCloud(OnProgressUpdate listener) throws IOException {
         String id = Tools.getPreference(Constant.KEY_SYNC_FOLDER_ID);
         String syncPath = Tools.getPreference(Constant.KEY_SYNC_FOLDER_PATH);
+        long lastSyncTime = Long.parseLong(Tools.getPreference(Constant.KEY_LAST_SYNC));
         File root = DriveService.checkExist(id);
         if (root != null) {
             HashMap<String, String> onlineFolderMap =
@@ -673,12 +695,28 @@ public class DriveService {
             int count = 0;
 
             for (String path : uploads) {
+                count++;
+                java.io.File file = new java.io.File(Paths.get(syncPath, path).toString());
+                if (!file.exists()) {
+                    if (listener != null) {
+                        listener.setProgress(count, total, "Deleting folder " + file.getName());
+                    }
+                    continue;
+                } else {
+                    BasicFileAttributes attr = Files.readAttributes(file.toPath(), BasicFileAttributes.class);
+                    if (attr.creationTime().toMillis() < lastSyncTime) {
+                        Tools.deleteFolder(file.getPath());
+                        if (listener != null) {
+                            listener.setProgress(count, total, "Deleting folder " + file.getName());
+                        }
+                        continue;
+                    }
+                }
                 String parents = "";
                 if (path.contains(java.io.File.separator)) {
                     parents = path.substring(0, path.indexOf(java.io.File.separator));
                 }
                 onlineFolderMap.putAll(DriveService.uploadFolder(syncPath, path, parents.isEmpty() ? root.getId() : onlineFolderMap.get(parents)));
-                count++;
                 if (listener != null) {
                     listener.setProgress(count, total, "Uploading folder " + Paths.get(path).getFileName().toString());
                 }
@@ -734,9 +772,12 @@ public class DriveService {
                             localFiles.add(filePath);
 
                             if (!onlineFiles.containsKey(filePath)) {
-                                map.put(filePath, Constant.CREATE);
+                                BasicFileAttributes attr = Files.readAttributes(p, BasicFileAttributes.class);
+                                if (attr.creationTime().toMillis() > lastSyncTime) {
+                                    map.put(filePath, Constant.CREATE);
+                                }
                             } else if (Files.getLastModifiedTime(Paths.get(syncPath, filePath)).toMillis() > lastSyncTime) {
-                                    map.put(filePath, Constant.MODIFY);
+                                map.put(filePath, Constant.MODIFY);
                             }
                         } catch (IOException e) {
                             throw new UncheckedIOException(e);
@@ -744,9 +785,28 @@ public class DriveService {
                     });
         }
 
-        Set<String> deletes = Sets.difference(onlineFiles.keySet(), localFiles);
-        if (!deletes.isEmpty()) {
-            deletes.stream().forEach(f -> map.put(f, Constant.DELETE));
+
+        Set<String> renames = getOnlineModifiedFiles(id, "RENAME").keySet();
+        Set<String> renameFolders = new TreeSet<>();
+        List<String> onlinePaths = new ArrayList<>(onlineFiles.keySet());
+        onlinePaths.sort((Comparator.comparingInt(o -> Paths.get(o).getNameCount())));
+        for (String path : onlinePaths) {
+            if (!renames.contains(onlineFiles.get(path).getId())) {
+                if (!localFiles.contains(path)) {
+                    boolean isChild = false;
+                    for (String p : renameFolders) {
+                        if (path.contains(p)) {
+                            isChild = true;
+                            break;
+                        }
+                    }
+                    if (!isChild) {
+                        map.put(path, Constant.DELETE);
+                    }
+                }
+            } else {
+                renameFolders.add(path);
+            }
         }
 
         return map;

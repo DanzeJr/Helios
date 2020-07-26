@@ -149,7 +149,7 @@ public class Configuration extends JFrame {
                     name = syncFolder.getName();
                 }
                 try {
-                    com.google.api.services.drive.model.File file = DriveService.checkExistName(name);
+                    com.google.api.services.drive.model.File file = DriveService.checkExistName("root", name);
                     if (file != null) {
                         int option = JOptionPane.showConfirmDialog(Configuration.this,
                                 String.format("A folder name '%s' already exist. Do you want to change name?", name),
